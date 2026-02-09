@@ -51,7 +51,15 @@ def run_scraper(page_number, page_size=20, result_list=None):
 
             for book in books:
                 # 1. Başlık
-                title_tag = book.select_one("a.truncate")
+                # İlk a.truncate etiketi bazen boş geliyor, bu yüzden h2 içindekini veya dolu olanı arıyoruz
+                title_tag = book.select_one("h2 a.truncate")
+                if not title_tag:
+                     # h2 içinde bulamazsa, metni olan ilk a.truncate'i bul
+                     for t in book.select("a.truncate"):
+                         if t.get_text(strip=True):
+                             title_tag = t
+                             break
+
                 title = (
                     title_tag.get_text(strip=True) if title_tag else "Title not found"
                 )
@@ -72,29 +80,50 @@ def run_scraper(page_number, page_size=20, result_list=None):
                     else "Format not found"
                 )
 
-                # 4. Fiyat Mantığı - Sadece ham metni (raw text) alıyoruz
+                # 4. Fiyat Mantığı
                 raw_price_text = "0.00"
-                price_elements = book.find_all(
-                    lambda tag: tag.name in ["span", "strong", "div"]
-                    and "$" in tag.text
-                )
+                
+                # Öncelik: .caption altındaki strong etiketi (genelde ana fiyat burada)
+                # Bu yöntem div gibi kapsayıcıları alıp "List: ..." gibi yan metinleri çekmeyi engeller
+                price_strong = book.select_one(".caption strong")
+                
+                if price_strong:
+                    # İndirimli ürün kontrolü: strong içinde line-through olan bir span var mı?
+                    discount_span = price_strong.select_one("span[style*='line-through']")
+                    if discount_span:
+                        # Varsa, asıl fiyat bir sonraki span'dadır
+                        real_price_span = discount_span.find_next_sibling("span")
+                        if real_price_span:
+                            raw_price_text = real_price_span.get_text(strip=True)
+                        else:
+                            # Yedek: sonraki span yoksa mevcut olanı al (beklenmedik durum)
+                            raw_price_text = price_strong.get_text(strip=True)
+                    else:
+                        # İndirim yoksa direkt strong içeriğini al
+                        raw_price_text = price_strong.get_text(strip=True)
+                else:
+                    # Yedek mantık: strong bulunamazsa span'lara bak (div'i hariç tutuyoruz)
+                    price_elements = book.find_all(
+                        lambda tag: tag.name in ["span"]  # strong yukarıda denendi, div kafa karıştırıyor
+                        and "$" in tag.text
+                    )
 
-                final_price_element = None
-                for el in price_elements:
-                    style = el.get("style", "")
-                    # Eğer üzeri çizili fiyat (eski fiyat) bulursak, bir sonrakini al
-                    if "line-through" in style:
-                        next_el = el.find_next_sibling()
-                        final_price_element = (
-                            next_el if next_el else el.find_next("span")
-                        )
-                        break
-                    # Üzeri çizili yoksa, bulduğun ilk dolar işaretli elementi al
-                    if not final_price_element:
-                        final_price_element = el
+                    final_price_element = None
+                    for el in price_elements:
+                        style = el.get("style", "")
+                        # Eğer üzeri çizili fiyat (eski fiyat) bulursak, bir sonrakini al
+                        if "line-through" in style:
+                            next_el = el.find_next_sibling()
+                            final_price_element = (
+                                next_el if next_el else el.find_next("span")
+                            )
+                            break
+                        # Üzeri çizili yoksa, bulduğun ilk dolar işaretli elementi al
+                        if not final_price_element:
+                            final_price_element = el
 
-                if final_price_element:
-                    raw_price_text = final_price_element.get_text(strip=True)
+                    if final_price_element:
+                        raw_price_text = final_price_element.get_text(strip=True)
 
                 # 5. ISBN Mantığı
                 isbn = "ISBN not found"
