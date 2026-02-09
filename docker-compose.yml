@@ -19,6 +19,8 @@ services:
   worker:
     build: .
     command: celery -A books_market worker --loglevel=info
+    env_file:
+      - .env
     volumes:
       - .:/code
     depends_on:

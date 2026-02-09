@@ -1,158 +1,165 @@
-import requests
-import cloudscraper
-from bs4 import BeautifulSoup
+import threading
 from celery import shared_task
-from models import Book
-import httpx
+from playwright.sync_api import sync_playwright
+
+from playwright_stealth import Stealth
+from bs4 import BeautifulSoup
+import re
+import time
+import random
+from .models import Book
+from shared.utils import clean_price_string
 
 
-@shared_task
-def scrape_books(page_number, page_size=2000):
+def run_scraper(page_number, page_size=20, result_list=None):
     url = f"https://bookdepot.ca/Store/Browse?page={page_number}&size={page_size}&sort=arrival_1"
-    # scraper = cloudscraper.create_scraper(
-    #     browser={"browser": "chrome", "platform": "windows", "desktop": True}
-    # )
-    # scraper.headers.update(
-    #     {
-    #         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    #         "Accept-Language": "en-US,en;q=0.5",
-    #         "DNT": "1",
-    #         "Connection": "keep-alive",
-    #         "Upgrade-Insecure-Requests": "1",
-    #     }
-    # )
-    # Source - https://stackoverflow.com/a/73444576
 
-    client = httpx.Client(http2=True)
+    with sync_playwright() as p:
+        # Tarayıcıyı başlatıyoruz
+        browser = p.chromium.launch(headless=True)
 
-    try:
-        response = client.get(url)
-        response.raise_for_status()
+        # Gerçekçi bir tarayıcı ortamı oluşturuyoruz
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+        )
+        page = context.new_page()
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        stealth = Stealth()
+        stealth.apply_stealth_sync(page)
 
-        # Find all book containers based on analysis
-        # The browser analysis suggested .grid-item is the main container
-        books = soup.select(".grid-item")
+        try:
+            # Sayfaya git
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-        if not books:
-            print("No books found. The page structure might have changed.")
-            return -1
+            # Cloudflare'in çözülmesi için rastgele insansı bekleme
+            time.sleep(random.uniform(5, 8))
 
-        print(f"Found {len(books)} books on the first page:\n")
+            content = page.content()
+            soup = BeautifulSoup(content, "html.parser")
 
-        for book in books:
-            # Extract Title
-            title_tag = book.select_one("a.truncate")
-            title = title_tag.get_text(strip=True) if title_tag else "Title not found"
+            books = soup.select(".grid-item")
 
-            # Extract Author - looking for links with 'Na=' in href
-            author_tag = book.select_one('a[href*="Na="]')
-            author = (
-                author_tag.get_text(strip=True) if author_tag else "Author not found"
-            )
+            if not books:
+                print(
+                    "Kitap bulunamadı. Sayfa yapısı değişmiş veya Cloudflare engeline takılmış olabiliriz."
+                )
+                # Sayfa içeriğini debug için yazdırabilirsin: print(soup.prettify()[:500])
+                return -1
 
-            # Extract Format - looking for links with 'Nb=' in href
-            format_tag = book.select_one('a[href*="Nb="]')
-            book_format = (
-                format_tag.get_text(strip=True) if format_tag else "Format not found"
-            )
+            print(f"Sayfa {page_number}: {len(books)} kitap bulundu.\n")
 
-            # Extract Price
-            price = "Price not found"
-            # Look for price elements
-            price_elements = book.find_all(
-                lambda tag: tag.name in ["span", "strong", "div"] and "$" in tag.text
-            )
+            for book in books:
+                # 1. Başlık
+                title_tag = book.select_one("a.truncate")
+                title = (
+                    title_tag.get_text(strip=True) if title_tag else "Title not found"
+                )
 
-            final_price_element = None
-            for el in price_elements:
-                # Check if this element is struck through
-                style = el.get("style", "")
-                if (
-                    "text-decoration:line-through" in style
-                    or "text-decoration: line-through" in style
-                ):
-                    # This is the old price, look for the next sibling/element
-                    next_el = el.find_next_sibling()
-                    if next_el:
-                        final_price_element = next_el
-                    else:
-                        # Sometimes it might be the next span in the parent
-                        final_price_element = el.find_next("span")
-                    break
-                else:
-                    # If we found a price element and it's NOT struck through, it might be the regular price
-                    # But we should prefer the one that comes AFTER a struck-through one if it exists.
-                    # Simpler approach: If we haven't found a struck-through one yet, keep this as candidate
+                # 2. Yazar
+                author_tag = book.select_one('a[href*="Na="]')
+                author = (
+                    author_tag.get_text(strip=True)
+                    if author_tag
+                    else "Author not found"
+                )
+
+                # 3. Format
+                format_tag = book.select_one('a[href*="Nb="]')
+                book_format = (
+                    format_tag.get_text(strip=True)
+                    if format_tag
+                    else "Format not found"
+                )
+
+                # 4. Fiyat Mantığı - Sadece ham metni (raw text) alıyoruz
+                raw_price_text = "0.00"
+                price_elements = book.find_all(
+                    lambda tag: tag.name in ["span", "strong", "div"]
+                    and "$" in tag.text
+                )
+
+                final_price_element = None
+                for el in price_elements:
+                    style = el.get("style", "")
+                    # Eğer üzeri çizili fiyat (eski fiyat) bulursak, bir sonrakini al
+                    if "line-through" in style:
+                        next_el = el.find_next_sibling()
+                        final_price_element = (
+                            next_el if next_el else el.find_next("span")
+                        )
+                        break
+                    # Üzeri çizili yoksa, bulduğun ilk dolar işaretli elementi al
                     if not final_price_element:
                         final_price_element = el
 
-            if final_price_element:
-                import re
+                if final_price_element:
+                    raw_price_text = final_price_element.get_text(strip=True)
 
-                price_match = re.search(r"\$\d+(?:\.\d+)?", final_price_element.text)
-                if price_match:
-                    price = price_match.group(0)
-
-            # Extract ISBN
-            # Look for text "ISBN:" in the caption or any span/div
-            isbn = "ISBN not found"
-            isbn_element = book.find(
-                lambda tag: tag.name in ["span", "div", "p"] and "ISBN:" in tag.text
-            )
-            if isbn_element:
-                import re
-
-                isbn_match = re.search(r"ISBN:\s*(\d{13})", isbn_element.text)
-                if isbn_match:
-                    isbn = isbn_match.group(1)
-
-            # Extract Quantity
-            quantity = "Quantity not found"
-            # Based on browser inspection, quantity is in .caption .dropdown .small
-            # Text format example: "List: $16.99 - Qty: 1000+"
-            quantity_tag = book.select_one(".caption .dropdown .small")
-            if quantity_tag:
-                import re
-
-                qty_match = re.search(
-                    r"Qty:\s*(\d+\+?)", quantity_tag.get_text(strip=True)
+                # 5. ISBN Mantığı
+                isbn = "ISBN not found"
+                isbn_element = book.find(
+                    lambda tag: tag.name in ["span", "div", "p"] and "ISBN:" in tag.text
                 )
-                if qty_match:
-                    quantity = qty_match.group(1)
+                if isbn_element:
+                    isbn_match = re.search(r"ISBN:\s*(\d{13})", isbn_element.text)
+                    if isbn_match:
+                        isbn = isbn_match.group(1)
 
-            print(f"Title:  {title}")
-            print(f"Author: {author}")
-            print(f"Format: {book_format}")
-            print(f"ISBN:   {isbn}")
-            print(f"Price:  {price}")
-            print(f"Quantity: {quantity}")
-            print("-" * 40)
-            Book.objects.update_or_create(
-                isbn=isbn,
-                defaults={
+                # 6. Stok/Miktar Mantığı
+                quantity = "0"
+                quantity_tag = book.select_one(".caption .dropdown .small")
+                if quantity_tag:
+                    qty_match = re.search(
+                        r"Qty:\s*(\d+\+?)", quantity_tag.get_text(strip=True)
+                    )
+                    if qty_match:
+                        quantity = qty_match.group(1)
+
+                # ISBN yoksa kaydetme (Unique constraint hatasını önler)
+                if isbn == "ISBN not found":
+                    continue
+
+                extracted_data = {
                     "title": title,
                     "author": author,
                     "format": book_format,
-                    "book_depot_price": float(price.replace("$", ""), 2),
+                    "book_depot_price": raw_price_text,
+                    "isbn": isbn,
                     "stock": quantity,
-                },
-            )
+                }
 
-        return page_number + 1
+                result_list.append(extracted_data)
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error scraping {url}: {e}")
-        if "response" in locals():
-            print("Response content (first 500 chars):")
-            print(response.text[:500])
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+            return page_number + 1
+
+        except Exception as e:
+            print(f"Beklenmeyen bir hata oluştu: {e}")
+            return None
+        finally:
+            browser.close()
 
 
-if __name__ == "__main__":
-    # page = 1
-    # while page:
-    #     page = scrape_books(page)
-    scrape_books(1, page_size=10)
+@shared_task
+def scrape_books(page_number, page_size=20):
+    extracted_books = []
+    # 3. Playwright'ı Django'dan kaçırma operasyonu
+    thread = threading.Thread(
+        target=run_scraper, args=(page_number, page_size, extracted_books)
+    )
+    thread.start()
+    thread.join()  # Thread bitene kadar Celery worker'ı bekletir
+
+    for data in extracted_books:
+        Book.objects.update_or_create(
+            isbn=data["isbn"],
+            defaults={
+                "title": data["title"],
+                "author": data["author"],
+                "format": data["format"],
+                "book_depot_price": clean_price_string(data["book_depot_price"]),
+                "stock": data["stock"],
+            },
+        )
+
+    return f"Sayfa {page_number} tamamlandı."

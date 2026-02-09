@@ -3,7 +3,6 @@ from django.db import models
 from shared.models import TimestampedModel
 
 
-
 class Book(TimestampedModel):
     title = models.CharField(max_length=500)
     author = models.CharField(max_length=255, blank=True, null=True)
@@ -21,6 +20,9 @@ class Book(TimestampedModel):
 
     class Meta:
         ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["isbn"]),
+        ]
 
     def __str__(self):
         return f"{self.title} ({self.isbn})"
