@@ -35,4 +35,4 @@ EXPOSE 10000
 # 9. Aşama: Çalıştırma komutu
 # Bu komut sırasıyla: Migration yapar, ardından Gunicorn'u başlatır.
 # "books_market" kısmını wsgi.py klasör adınla eşleştiğinden emin ol!
-CMD ["sh", "-c", "python manage.py migrate && (celery -A books_market worker --loglevel=info & gunicorn books_market.wsgi:application --bind 0.0.0.0:10000)"]
+CMD ["sh", "-c", "python manage.py collectstatic --no-input && python manage.py migrate && gunicorn books_market.wsgi:application --bind 0.0.0.0:10000"]
