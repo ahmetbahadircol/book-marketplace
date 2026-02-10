@@ -1,39 +1,43 @@
-# 1. Aşama: Python tabanlı Debian görüntüsü (Playwright için en kararlısı)
+FROM node:20-slim AS frontend-builder
+WORKDIR /build-fe
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build || vite build
+
 FROM python:3.12-bookworm
 
-# 2. Aşama: Python çıktılarını ve pyc dosyalarını optimize et
+# Python configuration
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PORT=10000
 
-# 3. Aşama: Çalışma dizinini ayarla
 WORKDIR /code
 
-# 4. Aşama: Sistem bağımlılıklarını kur (Gerekli temel paketler)
+# System dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# 5. Aşama: Bağımlılıkları kopyala ve kur
+# Python dependencies
 COPY requirements.txt /code/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 6. Aşama: Playwright ve sistem bağımlılıklarını kur
-# Not: "playwright install-deps" komutu Playwright'ın çalışması için gereken 
-# Linux kütüphanelerini (libgbm vb.) sisteme yükler.
+# Playwright setup
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# 7. Aşama: Proje dosyalarını kopyala
+# Project files
 COPY . /code/
 
-# 8. Aşama: Portu Render için ayarla
-ENV PORT=10000
-EXPOSE 10000
-
-RUN pip install --no-cache-dir -r requirements.txt
+# Frontend build files copy
+COPY --from=frontend-builder /build-fe/dist /code/frontend/dist
 
 RUN python manage.py collectstatic --no-input
 
+EXPOSE 10000
+
+# Start command: Migrate, Celery worker ve Gunicorn
 CMD ["sh", "-c", "python manage.py migrate && (celery -A books_market worker --loglevel=info & gunicorn books_market.wsgi:application --bind 0.0.0.0:10000)"]
