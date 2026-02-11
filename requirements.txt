@@ -17,6 +17,7 @@ decorator==5.2.1
 dj-database-url==3.1.0
 Django==6.0.2
 django-extensions==4.1
+djangorestframework==3.16.1
 executing==2.2.1
 greenlet==3.3.1
 gunicorn==25.0.3
