@@ -5,4 +5,9 @@ from celery import Celery
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'books_market.settings')
 
 app = Celery('books_market')
+
+# Load task modules from all registered Django app configs.
+app.config_from_object('django.conf:settings', namespace='CELERY')
+
+# Auto-discover tasks from all registered apps.
 app.autodiscover_tasks()

@@ -32,12 +32,12 @@ DEBUG = True
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split(",")
 
 # Application definition
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "books_market.settings")
+# os.environ.setdefault("DJANGO_SETTINGS_MODULE", "books_market.settings")
 
 # Celery Configuration
-app = Celery("books_market")
-app.config_from_object("django.conf:settings", namespace="CELERY")
-app.autodiscover_tasks()
+# app = Celery("books_market")
+# app.config_from_object("django.conf:settings", namespace="CELERY")
+# app.autodiscover_tasks()
 CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 CELERY_ACCEPT_CONTENT = ["json"]
